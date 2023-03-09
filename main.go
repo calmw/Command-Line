@@ -1,59 +1,50 @@
 package main
 
 import (
-	"context"
+	"Command-Line/cmd"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"os/signal"
-	"syscall"
-	"time"
 )
 
+var errInvalidSubCommand = errors.New("invalid sub-command specified")
+
 func main() {
-	if len(os.Args) != 3 {
-		_, _ = fmt.Fprintf(os.Stdout, "Usage: %s <command> <args>\n", os.Args[0])
-		os.Exit(1)
-	}
-	command := os.Args[1]
-	arg := os.Args[2]
-	// 创建context
-	cmdTimeOut := 30 * time.Second
-	ctx, cancel := createContextWithTimeout(cmdTimeOut)
-	// 信号处理程序
-	setupSignalHandler(os.Stdout, cancel)
-	// 执行外部程序
-	err := executeCommand(ctx, command, arg) // 如果你希望应用程序执行外部命令，且必须在一定时间内执行完成，可以使用该方法
+	err := handleCommand(os.Stdout, os.Args[1:])
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stdout, err)
 		os.Exit(1)
 	}
 }
 
-func createContextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.Background(), d)
-	return ctx, cancel
+func printUsage(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "Usage: mync [http|grpc] -h\n")
+	_ = cmd.HandleHttp(w, []string{"-h"})
+	_ = cmd.HandleGrpc(w, []string{"-h"})
 }
 
-func setupSignalHandler(w io.Writer, cancelFunc context.CancelFunc) {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM) // 为syscall.SIGINT和syscall.SIGTERM信号设置侦听通道，接着设置一个协程来等待信号，当得到一个信号时，调用cancelFunc函数，它是上面创建的ctx对应的context的取消函数。当调用这个函数时，os.exec.CommandContext()的实现会意识到这一点并最终强制终止命令。
-	go func() {
-		s := <-c
-		_, _ = fmt.Fprintf(w, "Got signal %v\n", s)
-		cancelFunc()
-	}()
-}
+func handleCommand(w io.Writer, args []string) error {
+	var err error
+	if len(args) < 1 {
+		err = errInvalidSubCommand
+	} else {
+		switch args[0] {
+		case "http":
+			err = cmd.HandleHttp(w, args[1:])
+		case "grpc":
+			err = cmd.HandleGrpc(w, args[1:])
+		case "-h":
+			printUsage(w)
+		case "--help":
+			printUsage(w)
+		default:
+			err = errInvalidSubCommand
+		}
+	}
 
-func executeCommand(ctx context.Context, command string, args string) error {
-	return exec.CommandContext(ctx, command, args).Run()
+	if errors.Is(err, cmd.ErrNoServerSpecified) || errors.Is(err, errInvalidSubCommand) {
+		_, _ = fmt.Fprintln(w, err)
+		printUsage(w)
+	}
+	return err
 }
-
-//测试：
-//	编译： go build -o application
-//	超时测试：超市自动退出：./application sleep 60
-//	信号接收测试：
-//		信号是系统与程序之间通信的途径之一
-//		查看pid: ps aux | grep./application
-//		发送信号：kill -2 1746, kill -15 1746
